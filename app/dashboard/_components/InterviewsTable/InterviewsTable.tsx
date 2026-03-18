@@ -38,6 +38,11 @@ export const InterviewsTable = ({
     [interviews],
   );
 
+  const completedInterviews = useMemo(
+    () => interviews.filter((interview) => interview.finishTime),
+    [interviews],
+  );
+
   const handleDelete = (data: typeof interviews) => {
     setSelectedInterviews(data);
     setShowDeleteModal(true);
@@ -50,6 +55,11 @@ export const InterviewsTable = ({
 
   const handleExportAll = () => {
     setSelectedInterviews(interviews);
+    setShowExportModal(true);
+  };
+
+  const handleExportCompleted = () => {
+    setSelectedInterviews(completedInterviews);
     setShowExportModal(true);
   };
 
@@ -94,6 +104,12 @@ export const InterviewsTable = ({
               <DropdownMenuContent>
                 <DropdownMenuItem onClick={handleExportAll}>
                   Export all interviews
+                </DropdownMenuItem>
+                <DropdownMenuItem
+                  disabled={completedInterviews.length === 0}
+                  onClick={handleExportCompleted}
+                >
+                  Export all completed interviews
                 </DropdownMenuItem>
                 <DropdownMenuItem
                   disabled={unexportedInterviews.length === 0}

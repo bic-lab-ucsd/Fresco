@@ -1,7 +1,12 @@
 'use server';
 
 import { createId } from '@paralleldrive/cuid2';
-import { Prisma, type Interview, type Protocol } from '~/lib/db/generated/client';
+import { unlink } from 'node:fs/promises';
+import {
+  Prisma,
+  type Interview,
+  type Protocol,
+} from '~/lib/db/generated/client';
 import { cookies } from 'next/headers';
 import trackEvent from '~/lib/analytics';
 import { safeRevalidateTag } from '~/lib/cache';
@@ -15,7 +20,6 @@ import { resequenceIds } from '~/lib/network-exporters/formatters/session/resequ
 import type {
   ExportOptions,
   ExportReturn,
-  FormattedSession,
 } from '~/lib/network-exporters/utils/types';
 import { getAppSetting } from '~/queries/appSettings';
 import { getInterviewsForExport } from '~/queries/interviews';
@@ -86,39 +90,48 @@ export const updateExportTime = async (interviewIds: Interview['id'][]) => {
   }
 };
 
-export const prepareExportData = async (interviewIds: Interview['id'][]) => {
-  await requireApiAuth();
-
-  const interviewsSessions = await getInterviewsForExport(interviewIds);
-
-  const protocolsMap = new Map<string, Protocol>();
-  interviewsSessions.forEach((session) => {
-    protocolsMap.set(session.protocol.hash, session.protocol);
-  });
-
-  const formattedProtocols: InstalledProtocols =
-    Object.fromEntries(protocolsMap);
-  const formattedSessions = formatExportableSessions(interviewsSessions);
-
-  return { formattedSessions, formattedProtocols };
-};
-
-export const exportSessions = async (
-  formattedSessions: FormattedSession[],
-  formattedProtocols: InstalledProtocols,
+export const exportInterviews = async (
   interviewIds: Interview['id'][],
   exportOptions: ExportOptions,
 ): Promise<ExportReturn> => {
   await requireApiAuth();
 
+  const tempFilePaths: string[] = [];
+  let exportStage = 'fetching interviews from database';
+
   try {
-    const result = await Promise.resolve(formattedSessions)
-      .then(insertEgoIntoSessionNetworks)
-      .then(groupByProtocolProperty)
-      .then(resequenceIds)
-      .then(generateOutputFiles(formattedProtocols, exportOptions))
-      .then(archive)
-      .then(uploadZipToUploadThing);
+    const interviewsSessions = await getInterviewsForExport(interviewIds);
+
+    const protocolsMap = new Map<string, Protocol>();
+    interviewsSessions.forEach((session) => {
+      protocolsMap.set(session.protocol.hash, session.protocol);
+    });
+
+    const formattedProtocols: InstalledProtocols =
+      Object.fromEntries(protocolsMap);
+    const formattedSessions = formatExportableSessions(interviewsSessions);
+
+    exportStage = 'generating export files';
+    const sessionsWithEgo = insertEgoIntoSessionNetworks(formattedSessions);
+    const groupedSessions = groupByProtocolProperty(sessionsWithEgo);
+    const resequencedSessions = resequenceIds(groupedSessions);
+    const exportResults = await generateOutputFiles(
+      formattedProtocols,
+      exportOptions,
+    )(resequencedSessions);
+
+    exportResults.forEach((result) => {
+      if (result.success) {
+        tempFilePaths.push(result.filePath);
+      }
+    });
+
+    exportStage = 'creating zip archive';
+    const archiveResult = await archive(exportResults);
+    tempFilePaths.push(archiveResult.path);
+
+    exportStage = 'uploading zip file';
+    const result = await uploadZipToUploadThing(archiveResult);
 
     void trackEvent({
       type: 'DataExported',
@@ -137,6 +150,7 @@ export const exportSessions = async (
     // eslint-disable-next-line no-console
     console.error(error);
     const e = ensureError(error);
+
     void trackEvent({
       type: 'Error',
       name: e.name,
@@ -144,15 +158,64 @@ export const exportSessions = async (
       stack: e.stack,
       metadata: {
         path: '~/actions/interviews.ts',
+        exportStage,
+        interviewCount: interviewIds.length,
+        exportOptions,
       },
     });
 
+    const userMessage = getExportErrorMessage(e, exportStage);
+
     return {
       status: 'error',
-      error: `Error during data export: ${e.message}`,
+      error: userMessage,
     };
+  } finally {
+    await cleanupTempFiles(tempFilePaths);
   }
 };
+
+function getExportErrorMessage(error: Error, stage: string): string {
+  const message = error.message.toLowerCase();
+
+  if (message.includes('heap') || message.includes('memory')) {
+    return `Export ran out of memory while ${stage}. Try exporting fewer interviews at a time.`;
+  }
+
+  if (message.includes('enospc') || message.includes('no space')) {
+    return `Export ran out of disk space while ${stage}. Please free up server storage and try again.`;
+  }
+
+  if (
+    message.includes('timeout') ||
+    message.includes('timedout') ||
+    message.includes('timed out') ||
+    message.includes('etimedout') ||
+    message.includes('econnreset')
+  ) {
+    return `Export timed out while ${stage}. Try exporting fewer interviews at a time.`;
+  }
+
+  if (
+    message.includes('econnrefused') ||
+    message.includes('database') ||
+    message.includes('prisma')
+  ) {
+    return `Database connection failed while ${stage}. Please try again later.`;
+  }
+
+  return `Export failed while ${stage}: ${error.message}`;
+}
+
+async function cleanupTempFiles(filePaths: string[]) {
+  await Promise.allSettled(
+    filePaths.map((filePath) =>
+      unlink(filePath).catch(() => {
+        // Ignore cleanup errors — files may already be deleted
+      }),
+    ),
+  );
+}
 
 export async function createInterview(data: CreateInterview) {
   const { participantIdentifier, protocolId } = data;

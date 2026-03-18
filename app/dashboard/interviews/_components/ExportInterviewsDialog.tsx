@@ -2,11 +2,7 @@ import type { Interview } from '~/lib/db/generated/client';
 import { DialogDescription } from '@radix-ui/react-dialog';
 import { FileWarning, Loader2, XCircle } from 'lucide-react';
 import { useState } from 'react';
-import {
-  exportSessions,
-  prepareExportData,
-  updateExportTime,
-} from '~/actions/interviews';
+import { exportInterviews, updateExportTime } from '~/actions/interviews';
 import { deleteZipFromUploadThing } from '~/actions/uploadThing';
 import { Button } from '~/components/ui/Button';
 import { cardClasses } from '~/components/ui/card';
@@ -29,7 +25,7 @@ import ExportOptionsView from './ExportOptionsView';
 
 const ExportingStateAnimation = () => {
   return (
-    <div className="fixed inset-0 z-99 flex flex-col items-center justify-center gap-3 bg-background/80 text-primary">
+    <div className="bg-background/80 text-primary fixed inset-0 z-99 flex flex-col items-center justify-center gap-3">
       <div
         className={cn(
           cardClasses,
@@ -80,14 +76,7 @@ export const ExportInterviewsDialog = ({
     try {
       const interviewIds = interviewsToExport.map((interview) => interview.id);
 
-      // prepare data for export
-      const { formattedSessions, formattedProtocols } =
-        await prepareExportData(interviewIds);
-
-      // export the data
-      const { zipUrl, zipKey, status, error } = await exportSessions(
-        formattedSessions,
-        formattedProtocols,
+      const { zipUrl, zipKey, status, error } = await exportInterviews(
         interviewIds,
         exportOptions,
       );

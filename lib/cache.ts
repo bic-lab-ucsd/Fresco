@@ -8,7 +8,6 @@ type StaticTag =
   | 'getParticipants'
   | 'getInterviewById'
   | 'getProtocols'
-  | 'getInterviewsForExport'
   | 'getProtocolsByHash'
   | 'getExistingAssetIds'
   | 'interviewCount'
